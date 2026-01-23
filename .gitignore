@@ -1,0 +1,82 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Output files (generated, not committed)
+output/
+*.mp4
+*.avi
+*.log
+
+# Model files (too large for git, download separately)
+models/peoplenet/*.engine
+models/peoplenet/*.onnx
+models/tracker/*.engine
+models/tracker/*.etlt
+models/face_detection/*.engine
+models/face_detection/*.onnx
+models/demographics/*.engine
+models/demographics/*.onnx
+models/yolov8/*.engine
+models/yolov8/*.onnx
+
+# Keep model directories and labels/configs
+!models/peoplenet/
+!models/peoplenet/labels.txt
+!models/tracker/
+!models/face_detection/
+!models/demographics/
+!models/yolov8/
+
+# Database files
+*.db
+*.db-journal
+*.index
+*.pkl
+
+# TensorRT cache
+.nvinfer_config_cache
+
+# System
+.DS_Store
+Thumbs.db

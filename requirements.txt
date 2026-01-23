@@ -1,0 +1,39 @@
+# IP AI Analytics - Python Dependencies
+# For NVIDIA Jetson Orin Nano (JetPack 5.x, Python 3.8+)
+
+# Core Dependencies
+numpy>=1.21.0,<1.24.0          # Numerical computing (compatible with TensorRT)
+opencv-python>=4.5.0           # Computer vision utilities
+pyyaml>=5.4.0                  # Configuration file parsing
+
+# DeepStream Python Bindings
+# Note: pyds comes with DeepStream SDK installation
+# Installed via: /opt/nvidia/deepstream/deepstream/lib/pyds.so
+# No pip installation needed - verify with: python3 -c "import pyds"
+
+# Database & Search
+faiss-gpu>=1.7.4               # GPU-accelerated vector similarity search
+# Note: Install with: pip3 install faiss-gpu
+
+# Logging & Monitoring
+structlog>=21.5.0              # Structured logging
+psutil>=5.9.0                  # System resource monitoring (CPU, memory, GPU)
+
+# Utilities
+python-dateutil>=2.8.0         # Date/time utilities
+pytz>=2021.3                   # Timezone support
+
+# Development & Testing
+pytest>=6.2.0                  # Testing framework
+pytest-cov>=3.0.0              # Code coverage
+black>=22.0.0                  # Code formatter
+pylint>=2.12.0                 # Linter
+mypy>=0.930                    # Type checker
+
+# Optional: ONNX Tools (for model conversion)
+onnx>=1.10.0                   # ONNX model format
+onnxruntime-gpu>=1.10.0        # ONNX inference runtime (fallback if TensorRT fails)
+
+# Optional: Visualization (for testing)
+matplotlib>=3.5.0              # Plotting
+Pillow>=9.0.0                  # Image processing

@@ -1,0 +1,153 @@
+%YAML:1.0
+################################################################################
+# IP AI Analytics - NvDCF Tracker Configuration with ReID
+# DeepStream nvtracker configuration for person re-identification
+# Based on config_tracker_NvDCF_accuracy.yml with optimizations for person tracking
+################################################################################
+
+BaseConfig:
+  # Minimum detector confidence threshold
+  # Lower for person detection to catch more candidates
+  minDetectorConfidence: 0.35
+
+TargetManagement:
+  # Unclip bounding boxes at image borders for better tracking
+  enableBboxUnClipping: 1
+  # Preserve stream order for deterministic multi-stream tracking
+  preserveStreamUpdateOrder: 0
+  # Max targets per stream (persons in frame)
+  maxTargetsPerStream: 100
+
+  # Creation & Termination Policy
+  # New target created if IOU < this threshold with existing targets
+  minIouDiff4NewTarget: 0.4
+  # Minimum confidence to keep tracker active
+  minTrackerConfidence: 0.2
+  # Frames before target is considered valid (reduce false positives)
+  probationAge: 2
+  # Max shadow tracking age (frames tracked without detection)
+  # Higher value = better RE-ID across occlusions
+  maxShadowTrackingAge: 60
+  # Early termination for tentative tracks
+  earlyTerminationAge: 1
+
+TrajectoryManagement:
+  # Use standard 32-bit IDs (sufficient for our use case)
+  useUniqueID: 0
+  # Enable Re-Association for RE-ID across time gaps
+  enableReAssoc: 1
+
+  # Re-Assoc Metric: Thresholds
+  # TUNED: Stricter matching to prevent false re-associations
+  minMatchingScore4Overall: 0.70        # Was 0.65 - require higher overall match
+  minTrackletMatchingScore: 0.40        # Was 0.30 - stricter tracklet matching
+  # ReID similarity threshold (CRITICAL for RE-ID)
+  minMatchingScore4ReidSimilarity: 0.15 # Was 0.08 - require better ReID match
+
+  # Re-Assoc Metric: Weights
+  # TUNED: Heavily prioritize ReID over trajectory for re-association
+  matchingScoreWeight4TrackletSimilarity: 0.50  # Was 0.80 - reduce trajectory weight
+  matchingScoreWeight4ReidSimilarity: 0.70      # Was 0.40 - increase ReID weight significantly
+
+  # Re-Assoc: Motion-based parameters
+  minTrajectoryLength4Projection: 20    # Was 30 - allow shorter trajectories
+  prepLength4TrajectoryProjection: 30   # Was 50
+  trajectoryProjectionLength: 20        # Was 30
+  maxAngle4TrackletMatching: 45         # Was 60 - stricter angle matching
+  minSpeedSimilarity4TrackletMatching: 0.10  # Was 0.06 - stricter speed matching
+  minBboxSizeSimilarity4TrackletMatching: 0.20  # Was 0.10 - stricter size matching
+  maxTrackletMatchingTimeSearchRange: 20  # Was 25 - reduce search range
+  trajectoryProjectionProcessNoiseScale: 0.01
+  trajectoryProjectionMeasurementNoiseScale: 100
+  trackletSpacialSearchRegionScale: 0.01
+
+  # ReID feature extraction interval
+  # TUNED: More frequent ReID for better identity preservation
+  reidExtractionInterval: 3  # Was 5 - extract ReID more often
+
+DataAssociator:
+  # Data association algorithm
+  dataAssociatorType: 0     # DEFAULT
+  associationMatcherType: 1  # CASCADED (better for multi-object)
+  # Only match same-class objects (person-to-person)
+  checkClassMatch: 1
+
+  # Association Metric: Thresholds
+  # TUNED: Increased thresholds to prevent ID switches during proximity
+  minMatchingScore4Overall: 0.15        # Was 0.03 - require higher confidence for association
+  minMatchingScore4SizeSimilarity: 0.50 # Was 0.35 - size must match better
+  minMatchingScore4Iou: 0.20            # Was 0.06 - require more overlap
+  minMatchingScore4VisualSimilarity: 0.60  # Was 0.50 - visual appearance must match better
+
+  # Association Metric: Weights
+  # TUNED: Increased visual similarity weight to rely more on appearance
+  matchingScoreWeight4VisualSimilarity: 0.60  # Was 0.40 - prioritize appearance
+  matchingScoreWeight4SizeSimilarity: 0.50    # Was 0.60
+  matchingScoreWeight4Iou: 0.30               # Was 0.40 - reduce IOU weight (helps during occlusion)
+
+  # Tentative detections (lower confidence)
+  tentativeDetectorConfidence: 0.10
+  minMatchingScore4TentativeIou: 0.30
+
+StateEstimator:
+  # State estimator type: REGULAR (Kalman filter)
+  stateEstimatorType: 1  # SIMPLE
+
+  # Dynamics Modeling (Kalman filter noise parameters)
+  processNoiseVar4Loc: 6000.0      # Process noise for location
+  processNoiseVar4Size: 1500.0     # Process noise for size
+  processNoiseVar4Vel: 1200.0      # Process noise for velocity
+  measurementNoiseVar4Detector: 100.0   # Measurement noise from detector
+  measurementNoiseVar4Tracker: 300.0    # Measurement noise from tracker
+
+VisualTracker:
+  # Visual tracker type: NvDCF (Deep Correlation Filter)
+  visualTrackerType: 1  # NvDCF
+
+  # NvDCF: Feature Extraction
+  useColorNames: 1       # Use color features
+  useHog: 1              # Use HOG features
+  featureImgSizeLevel: 3 # Medium feature size (1=smallest, 5=largest)
+  featureFocusOffsetFactor_y: -0.10
+
+  # NvDCF: Correlation Filter parameters
+  filterLr: 0.08                    # Filter learning rate
+  filterChannelWeightsLr: 0.03      # Channel weights learning rate
+  gaussianSigma: 0.57               # Gaussian sigma for response
+
+################################################################################
+# ReID Configuration (CRITICAL SECTION)
+################################################################################
+ReID:
+  # ReID type: 2 = ReID-based reassociation (OSNet embeddings)
+  reidType: 2
+
+  # Reid Network Configuration
+  batchSize: 32              # Batch size for ReID inference
+  workspaceSize: 1000        # Workspace size in MB
+  reidFeatureSize: 256       # ResNet50 Market-1501 output: 256-dim feature vector
+  reidHistorySize: 100       # Keep last 100 ReID features per person
+  # ResNet50 input: 256x128 (Height x Width), 3 channels
+  inferDims: [3, 256, 128]   # CHW format
+  # FP16 for speed on Jetson (2x faster than FP32)
+  networkMode: 1             # 0=FP32, 1=FP16, 2=INT8
+
+  # Input Preprocessing
+  inputOrder: 0              # NCHW format
+  colorFormat: 0             # RGB
+  # ImageNet normalization (standard for OSNet)
+  offsets: [123.675, 116.28, 103.53]
+  netScaleFactor: 0.01735207  # 1/57.5 (ImageNet std normalization)
+  keepAspc: 1                # Keep aspect ratio
+
+  # Output Postprocessing
+  addFeatureNormalization: 1         # L2-normalize embeddings
+  minVisibility4GalleryUpdate: 0.5   # Only add to gallery if visibility > 50%
+  outputReidTensor: 1                # CRITICAL: Output ReID embeddings to user metadata
+
+  # Model Paths
+  # Using ResNet50 trained on Market-1501 dataset (person ReID)
+  # Absolute paths for reliability
+  tltEncodedModel: "/home/nvidia/projects/inverse_point/ip_ai_analytics/models/tracker/resnet50_market1501.etlt"
+  tltModelKey: "nvidia_tao"
+  modelEngineFile: "/home/nvidia/projects/inverse_point/ip_ai_analytics/models/tracker/resnet50_market1501_b32_gpu0_fp16.engine"

@@ -1,0 +1,30 @@
+################################################################################
+# Test Configuration - Using DeepStream Sample TrafficCamNet
+# This is to verify the pipeline works before debugging PeopleNet
+################################################################################
+
+[property]
+gpu-id=0
+net-scale-factor=0.00392156862745098
+onnx-file=/opt/nvidia/deepstream/deepstream-7.1/samples/models/Primary_Detector/resnet18_trafficcamnet_pruned.onnx
+labelfile-path=/opt/nvidia/deepstream/deepstream-7.1/samples/models/Primary_Detector/labels.txt
+int8-calib-file=/opt/nvidia/deepstream/deepstream-7.1/samples/models/Primary_Detector/cal_trt.bin
+batch-size=1
+process-mode=1
+model-color-format=0
+network-mode=1
+num-detected-classes=4
+interval=0
+gie-unique-id=1
+cluster-mode=2
+
+[class-attrs-all]
+topk=20
+nms-iou-threshold=0.5
+pre-cluster-threshold=0.2
+
+# Person class (class 2 for trafficcamnet)
+[class-attrs-2]
+topk=20
+nms-iou-threshold=0.5
+pre-cluster-threshold=0.3

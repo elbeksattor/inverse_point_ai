@@ -1,0 +1,77 @@
+################################################################################
+# IP AI Analytics - PeopleNet Person Detection Configuration
+# DeepStream nvinfer (TensorRT) configuration for PeopleNet v2.3.3
+# This is an officially supported NVIDIA model for person detection
+################################################################################
+
+[property]
+gpu-id=0
+
+# Network scaling (PeopleNet uses specific normalization)
+# net-scale-factor = 1/255 = 0.00392156862745098
+net-scale-factor=0.00392156862745098
+
+# BGR mean subtraction values for PeopleNet
+offsets=103.939;116.779;123.68
+
+# Model files (absolute paths)
+onnx-file=/home/nvidia/projects/inverse_point/ip_ai_analytics/models/peoplenet/resnet34_peoplenet_int8.onnx
+model-engine-file=/home/nvidia/projects/inverse_point/ip_ai_analytics/models/peoplenet/resnet34_peoplenet_int8.onnx_b1_gpu0_fp16.engine
+labelfile-path=/home/nvidia/projects/inverse_point/ip_ai_analytics/models/peoplenet/labels.txt
+
+# Batch processing
+batch-size=1
+
+# Process mode: 1=Primary (detector)
+process-mode=1
+
+# Model color format: 0=RGB, 1=BGR
+# PeopleNet was trained with BGR input
+model-color-format=1
+
+# Network mode: 0=FP32, 1=INT8, 2=FP16
+# Using FP16 for good balance on Jetson
+network-mode=2
+
+# PeopleNet detects 3 classes: person, bag, face
+num-detected-classes=3
+
+# Detection interval: 0=every frame
+interval=0
+
+# Unique ID for this GIE (primary detector)
+gie-unique-id=1
+
+# Output tensor names (must match TensorRT engine exactly with :0 suffix)
+output-blob-names=output_cov/Sigmoid:0;output_bbox/BiasAdd:0
+
+# Clustering mode: 2=NMS (Non-Maximum Suppression)
+# This works natively with DetectNet_v2 style outputs
+cluster-mode=2
+
+# Maintain aspect ratio during preprocessing
+maintain-aspect-ratio=1
+
+################################################################################
+# Class-specific attributes for NMS clustering
+################################################################################
+
+# Settings for all classes
+[class-attrs-all]
+topk=20
+nms-iou-threshold=0.5
+pre-cluster-threshold=0.2
+
+# Person class (class 0) - primary target with higher confidence threshold
+[class-attrs-0]
+topk=20
+nms-iou-threshold=0.5
+pre-cluster-threshold=0.4
+
+# Bag class (class 1) - disabled (threshold=0 means no detections)
+[class-attrs-1]
+pre-cluster-threshold=0.0
+
+# Face class (class 2) - disabled
+[class-attrs-2]
+pre-cluster-threshold=0.0

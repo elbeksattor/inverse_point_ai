@@ -1,0 +1,87 @@
+################################################################################
+# IP AI Analytics - YOLOv8n Person Detection Configuration
+# DeepStream nvinfer (TensorRT) configuration for YOLOv8n
+################################################################################
+
+[property]
+gpu-id=0
+# Network type: 0=Detector, 1=Classifier, 2=Segmentation, 100=Custom
+net-scale-factor=0.00392156862745098
+# YOLOv8 uses RGB input normalized to [0,1]
+# net-scale-factor = 1/255 = 0.00392156862745098
+
+# Model files (absolute paths)
+onnx-file=/home/nvidia/projects/inverse_point/ip_ai_analytics/models/yolov8/yolov8n.onnx
+model-engine-file=/home/nvidia/projects/inverse_point/ip_ai_analytics/models/yolov8/yolov8n.onnx_b1_gpu0_fp16.engine
+labelfile-path=/home/nvidia/projects/inverse_point/ip_ai_analytics/models/yolov8/coco_labels.txt
+
+# Input dimensions (YOLOv8n default: 640x640)
+infer-dims=3;640;640
+maintain-aspect-ratio=1
+symmetric-padding=1
+
+# Batch processing
+batch-size=1
+# Process mode: 1=Primary (detector), 2=Secondary (classifier)
+process-mode=1
+
+# Model color format: 0=RGB, 1=BGR, 2=GRAY
+model-color-format=0
+
+# Network mode: 0=FP32, 1=INT8, 2=FP16
+# Using FP16 for Jetson Orin Nano (good balance of speed/accuracy)
+network-mode=2
+
+# YOLOv8 detects 80 COCO classes (person is class 0)
+num-detected-classes=80
+
+# Detection interval: 0=every frame, N=every Nth frame
+# Start with 0 for maximum accuracy, can increase for performance
+interval=0
+
+# Unique ID for this GIE (primary detector)
+gie-unique-id=1
+
+# Output layers for YOLOv8 (output format: boxes, scores, classes)
+# YOLOv8 uses a different output format than YOLOv5
+output-blob-names=output0
+
+# Clustering/NMS: 1=DBSCAN, 2=NMS, 3=DBSCAN+NMS Hybrid, 4=None
+cluster-mode=2
+
+# Enable tensor metadata for custom parsing
+output-tensor-meta=1
+
+# Custom parser for YOLOv8 output format
+# We'll need to compile a custom parser or use NvDsInferParseCustomYoloV8
+# For now, we'll use the default YOLO parser and may need to adjust
+parse-bbox-func-name=NvDsInferParseYolo
+custom-lib-path=/opt/nvidia/deepstream/deepstream-7.1/lib/libnvds_infercustomparser.so
+
+################################################################################
+# Class-specific attributes
+################################################################################
+
+# Global class attributes
+[class-attrs-all]
+nms-iou-threshold=0.45
+pre-cluster-threshold=0.25
+topk=100
+
+# Person class (class 0) - higher sensitivity
+[class-attrs-0]
+nms-iou-threshold=0.45
+pre-cluster-threshold=0.35
+topk=100
+# Minimum object size (to filter false positives)
+detected-min-w=20
+detected-min-h=40
+# Maximum object size
+detected-max-w=4096
+detected-max-h=4096
+
+################################################################################
+# Performance tuning
+################################################################################
+# Note: enable-dla, scaling-filter, scaling-compute-hw removed as they are
+# not supported in DeepStream 7.1 nvinfer plugin

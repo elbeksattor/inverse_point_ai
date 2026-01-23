@@ -1,0 +1,210 @@
+# IP AI Analytics - Pipeline Configuration
+# Main configuration file for the analytics system
+
+# System Configuration
+system:
+  device_id: "jetson_orin_nano_001"
+  log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  log_dir: "output/logs"
+  enable_performance_monitoring: true
+
+# Input Configuration
+input:
+  type: "usb_camera"  # Options: "usb_camera", "video_file", "rtsp_stream"
+
+  # USB Camera Configuration
+  usb_cameras:
+    - device: "/dev/video0"
+      camera_id: 1
+      name: "Front Camera"
+      width: 1920
+      height: 1080
+      fps: 30
+    - device: "/dev/video1"
+      camera_id: 2
+      name: "Left Camera"
+      width: 1920
+      height: 1080
+      fps: 30
+    # Add more cameras as needed (max 4)
+
+  # Video File Configuration (for testing)
+  video_files:
+    - path: "data/videos/test_video_1.mp4"
+      camera_id: 1
+      loop: false
+    - path: "data/videos/test_video_2.mp4"
+      camera_id: 2
+      loop: false
+
+  # RTSP Stream Configuration (future)
+  rtsp_streams:
+    - url: "rtsp://192.168.1.100:8554/camera1"
+      camera_id: 1
+
+# DeepStream Pipeline Configuration
+deepstream:
+  # Stream Multiplexer
+  streammux:
+    batch_size: 4  # Number of streams (cameras)
+    batched_push_timeout: 40000  # microseconds
+    width: 1920
+    height: 1080
+    enable_padding: false
+    nvbuf_memory_type: 0  # 0=default, 3=unified memory
+
+  # Primary GIE (Person Detection - PeopleNet)
+  pgie:
+    model_name: "peoplenet"
+    model_path: "models/peoplenet/resnet34_peoplenet_int8.etlt"
+    engine_path: "models/peoplenet/resnet34_peoplenet_int8.engine"
+    config_file: "configs/peoplenet_config.txt"
+    batch_size: 4
+    interval: 0  # Inference every frame (0), or every N frames
+    class_ids: [0]  # 0=Person, 1=Bag, 2=Face (we only use Person)
+    confidence_threshold: 0.4
+    nms_threshold: 0.3
+
+  # Tracker (NvDCF with OSNet)
+  tracker:
+    config_file: "configs/tracker_config.txt"
+    tracker_width: 640
+    tracker_height: 384
+    ll_lib_file: "/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so"
+    ll_config_file: "configs/tracker_nvdcf_config.txt"
+    enable_batch_process: true
+    enable_past_frame: true  # Required for RE-ID embeddings
+
+  # Secondary GIE 1 (Face Detection - RetinaFace)
+  sgie1_face:
+    enable: true
+    model_name: "retinaface"
+    model_path: "models/retinaface/retinaface_mobilenet025.onnx"
+    engine_path: "models/retinaface/retinaface_mobilenet025_fp16.engine"
+    config_file: "configs/retinaface_config.txt"
+    batch_size: 8
+    interval: 0
+    operate_on_gie_id: 1  # Operates on PGIE (person) outputs
+    confidence_threshold: 0.6
+
+  # Secondary GIE 2 (Demographics - Age/Gender)
+  sgie2_demographics:
+    enable: true
+    model_name: "mivolo"
+    model_path: "models/mivolo/mivolo_age_gender.onnx"
+    engine_path: "models/mivolo/mivolo_age_gender_fp16.engine"
+    config_file: "configs/mivolo_config.txt"
+    batch_size: 8
+    interval: 0
+    operate_on_gie_id: 2  # Operates on SGIE1 (face) outputs
+
+  # Secondary GIE 3 (Head Pose Estimation)
+  sgie3_headpose:
+    enable: true
+    model_name: "6drepnet"
+    model_path: "models/headpose/6drepnet.onnx"
+    engine_path: "models/headpose/6drepnet_fp16.engine"
+    config_file: "configs/6drepnet_config.txt"
+    batch_size: 8
+    interval: 0
+    operate_on_gie_id: 2  # Operates on SGIE1 (face) outputs
+
+  # On-Screen Display (OSD)
+  osd:
+    enable: true  # Set to false in production
+    process_mode: 0  # 0=CPU, 1=GPU
+    display_text: true
+    display_bbox: true
+    display_mask: false
+    display_clock: true
+
+# Analytics Configuration
+analytics:
+  # RE-ID Database
+  reid:
+    database_path: "output/database/person_database.db"
+    faiss_index_path: "output/database/person_embeddings.index"
+    embedding_dimension: 128  # OSNet embedding size
+    similarity_threshold: 0.75  # Cosine similarity threshold (0.0-1.0)
+    use_gpu: true  # Use GPU-accelerated FAISS
+    embedding_update_weight: 0.3  # Moving average: new_emb = (1-w)*old + w*new
+    retention_days: 30  # Auto-delete persons not seen for N days
+
+  # Attention Detection
+  attention:
+    yaw_threshold: 30.0  # degrees (|yaw| < threshold = looking)
+    pitch_threshold: 20.0  # degrees (|pitch| < threshold = looking)
+    engagement_duration: 2.0  # seconds (looking > N seconds = qualified impression)
+    distraction_timeout: 1.0  # seconds (not looking > N seconds = distracted)
+
+  # Demographics Aggregation
+  demographics:
+    age_groups:
+      - "0-2"
+      - "3-9"
+      - "10-19"
+      - "20-29"
+      - "30-39"
+      - "40-49"
+      - "50-59"
+      - "60-69"
+      - "70+"
+    gender_classes:
+      - "Male"
+      - "Female"
+      - "Unknown"
+    confidence_threshold: 0.5  # Minimum confidence to consider prediction
+    smoothing_window: 5  # Number of frames for moving average
+
+  # Dwell Time
+  dwell_time:
+    gap_tolerance: 5.0  # seconds (allow gaps < N seconds)
+    min_dwell_time: 1.0  # seconds (ignore persons seen < N seconds)
+
+# Output Configuration
+output:
+  # Video Output (with OSD overlay, for testing)
+  video:
+    enable: true
+    codec: "H264"  # H264, H265
+    bitrate: 4000000  # 4 Mbps
+    output_dir: "output/videos"
+    filename_format: "output_{timestamp}.mp4"
+
+  # JSON Analytics Output
+  json:
+    enable: true
+    output_dir: "output/analytics"
+    filename_format: "analytics_{timestamp}.json"
+    interval: 60  # seconds (generate JSON every N seconds)
+    pretty_print: true  # Human-readable JSON (set to false in production)
+
+  # System Controller Integration
+  system_controller:
+    enable: false  # Enable when integrating with system controller
+    mode: "file"  # "file" or "api"
+    file_path: "/var/inverse_point/analytics.json"  # For file mode
+    api_endpoint: "http://localhost:8080/api/analytics"  # For API mode
+    api_key: ""  # If API requires authentication
+
+# Performance Configuration
+performance:
+  # GPU Configuration
+  gpu_id: 0
+  cudnn_benchmark: true
+
+  # Memory Configuration
+  max_batch_latency: 40000  # microseconds
+  buffer_pool_size: 4  # Number of buffers per stream
+
+  # Optimization
+  use_fp16: true  # Use FP16 precision (faster, less accurate)
+  use_int8: false  # Use INT8 precision (fastest, requires calibration)
+
+# Development Configuration
+development:
+  debug_mode: false
+  save_debug_frames: false
+  debug_frames_dir: "output/debug_frames"
+  print_fps: true
+  fps_interval: 5  # Print FPS every N seconds
