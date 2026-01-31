@@ -984,6 +984,207 @@ class PersonDatabase:
             )
         }
 
+    def get_attention_analytics(
+        self,
+        camera_id: Optional[int] = None,
+        since: Optional[datetime] = None
+    ) -> Dict:
+        """
+        Get attention-focused analytics summary.
+
+        Returns:
+            Dictionary with attention metrics:
+            - total_qualified_impressions: Total QI across all persons
+            - unique_persons_with_qi: Persons who had at least one QI
+            - avg_attention_time: Average attention time per person
+            - max_attention_time: Maximum attention time observed
+            - attention_by_demographics: QI breakdown by gender/age
+        """
+        cursor = self.conn.cursor()
+
+        where_clauses = []
+        params = []
+
+        if camera_id is not None:
+            where_clauses.append("last_camera_id = ?")
+            params.append(camera_id)
+
+        if since is not None:
+            where_clauses.append("last_seen >= ?")
+            params.append(since)
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        # Get attention summary
+        cursor.execute(f'''
+            SELECT
+                SUM(qualified_impressions) as total_qi,
+                COUNT(CASE WHEN qualified_impressions > 0 THEN 1 END) as persons_with_qi,
+                AVG(total_attention_time) as avg_attention_time,
+                MAX(total_attention_time) as max_attention_time,
+                SUM(total_dwell_time) as total_dwell_time,
+                COUNT(*) as total_persons
+            FROM persons {where_sql}
+        ''', params)
+
+        row = cursor.fetchone()
+
+        summary = {
+            "total_qualified_impressions": row['total_qi'] or 0,
+            "unique_persons_with_qi": row['persons_with_qi'] or 0,
+            "avg_attention_time": round(row['avg_attention_time'] or 0, 2),
+            "max_attention_time": round(row['max_attention_time'] or 0, 2),
+            "total_dwell_time": round(row['total_dwell_time'] or 0, 2),
+            "total_persons": row['total_persons'] or 0
+        }
+
+        # Calculate QI rate (persons with QI / total persons)
+        if summary["total_persons"] > 0:
+            summary["qi_rate"] = round(
+                summary["unique_persons_with_qi"] / summary["total_persons"], 3
+            )
+        else:
+            summary["qi_rate"] = 0.0
+
+        # Get QI breakdown by gender
+        cursor.execute(f'''
+            SELECT
+                gender,
+                SUM(qualified_impressions) as qi_count,
+                COUNT(*) as person_count
+            FROM persons {where_sql}
+            GROUP BY gender
+        ''', params)
+
+        gender_qi = {}
+        for row in cursor.fetchall():
+            gender = row['gender'] or 'Unknown'
+            gender_qi[gender] = {
+                "qualified_impressions": row['qi_count'] or 0,
+                "person_count": row['person_count'] or 0
+            }
+
+        summary["qi_by_gender"] = gender_qi
+
+        # Get QI breakdown by age group
+        cursor.execute(f'''
+            SELECT
+                age_group,
+                SUM(qualified_impressions) as qi_count,
+                COUNT(*) as person_count
+            FROM persons {where_sql}
+            GROUP BY age_group
+        ''', params)
+
+        age_qi = {}
+        for row in cursor.fetchall():
+            age_group = row['age_group'] or 'Unknown'
+            age_qi[age_group] = {
+                "qualified_impressions": row['qi_count'] or 0,
+                "person_count": row['person_count'] or 0
+            }
+
+        summary["qi_by_age_group"] = age_qi
+
+        return summary
+
+    def finalize_person_session(
+        self,
+        person_id: int,
+        dwell_time: float,
+        attention_time: float,
+        qualified_impression: bool = False
+    ):
+        """
+        Finalize a person's session when they leave the camera view.
+
+        Args:
+            person_id: Person ID
+            dwell_time: Total time person was visible (seconds)
+            attention_time: Time person spent looking at camera (seconds)
+            qualified_impression: Whether this session resulted in a QI
+        """
+        cursor = self.conn.cursor()
+
+        if qualified_impression:
+            cursor.execute('''
+                UPDATE persons
+                SET total_dwell_time = total_dwell_time + ?,
+                    total_attention_time = total_attention_time + ?,
+                    qualified_impressions = qualified_impressions + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE person_id = ?
+            ''', (dwell_time, attention_time, person_id))
+        else:
+            cursor.execute('''
+                UPDATE persons
+                SET total_dwell_time = total_dwell_time + ?,
+                    total_attention_time = total_attention_time + ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE person_id = ?
+            ''', (dwell_time, attention_time, person_id))
+
+        self.conn.commit()
+
+        logger.info(
+            "person_session_finalized",
+            person_id=person_id,
+            dwell_time=f"{dwell_time:.1f}s",
+            attention_time=f"{attention_time:.1f}s",
+            qualified_impression=qualified_impression
+        )
+
+    def log_appearance_with_attention(
+        self,
+        person_id: int,
+        frame_number: int,
+        confidence: float,
+        bbox: Tuple[float, float, float, float],
+        camera_id: int,
+        tracker_id: Optional[int] = None,
+        attention_state: Optional[str] = None,
+        head_yaw: Optional[float] = None,
+        head_pitch: Optional[float] = None,
+        head_roll: Optional[float] = None,
+        age_group: Optional[str] = None,
+        gender: Optional[str] = None
+    ):
+        """
+        Log person appearance with full attention data.
+
+        Args:
+            person_id: Person ID
+            frame_number: Current frame number
+            confidence: Detection confidence
+            bbox: Bounding box (x, y, width, height)
+            camera_id: Camera ID
+            tracker_id: Tracker ID
+            attention_state: Current attention state (NOT_LOOKING, LOOKING, ENGAGED)
+            head_yaw: Head yaw angle in degrees
+            head_pitch: Head pitch angle in degrees
+            head_roll: Head roll angle in degrees
+            age_group: Age group
+            gender: Gender
+        """
+        cursor = self.conn.cursor()
+
+        cursor.execute('''
+            INSERT INTO appearances (
+                person_id, camera_id, tracker_id, frame_number, confidence,
+                bbox_x, bbox_y, bbox_width, bbox_height,
+                attention_state, head_yaw, head_pitch, head_roll,
+                age_group, gender
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            person_id, camera_id, tracker_id, frame_number, confidence,
+            bbox[0], bbox[1], bbox[2], bbox[3],
+            attention_state, head_yaw, head_pitch, head_roll,
+            age_group, gender
+        ))
+
+        self.conn.commit()
+
     def close(self):
         """Close database and save index."""
         # Log gallery stats before closing

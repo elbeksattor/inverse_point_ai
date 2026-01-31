@@ -223,17 +223,108 @@ RECENT_SEEN_THRESHOLD_REDUCTION = 0.20  # Threshold reduction (increased)
 
 ---
 
+## [0.5.0] - 2026-01-31
+
+### Phase 5: Attention Detection - IMPLEMENTED
+
+#### Added
+- **Head Pose SGIE** - Secondary inference for head pose estimation on face detections
+- **AttentionTracker** - State machine for tracking attention states per person
+  - `NOT_LOOKING` - Person not facing camera (|yaw| > 30° or |pitch| > 20°)
+  - `LOOKING` - Person facing camera (|yaw| < 30° AND |pitch| < 20°)
+  - `ENGAGED` - Looking for >2 seconds (qualified impression)
+- **Qualified Impressions** - Count persons who engaged with display
+- **Visual Indicators** - OSD colors and labels for attention state
+  - Green border + `[ENGAGED]` for engaged persons
+  - Yellow border + `[LOOKING]` for looking persons
+  - Default blue border for not looking
+- **Attention Analytics** - Database methods for attention metrics
+  - `get_attention_analytics()` - QI by demographics, attention times
+  - `finalize_person_session()` - Update dwell/attention on session end
+  - `log_appearance_with_attention()` - Full attention data logging
+
+#### Configuration Files
+- `configs/sgie_headpose_config.txt` - Head pose SGIE configuration
+
+#### Models Added
+- `models/headpose/headpose_placeholder.onnx` - Placeholder head pose model
+
+#### Modified
+- `camera_pipeline.py`:
+  - Added SGIE-2 (head pose) to pipeline
+  - Added PASS 1.5 for head pose extraction from faces
+  - Integrated AttentionTracker for state tracking
+  - Updated OSD display with attention labels and colors
+  - Updated statistics overlay with attention counts
+- `main.py`:
+  - Added CLI args: `--sgie-headpose-config`, `--yaw-threshold`, `--pitch-threshold`, `--engagement-time`
+  - Updated console output with attention metrics
+  - Updated startup banner with attention settings
+  - Updated final statistics with attention summary
+- `person_database.py`:
+  - Added `get_attention_analytics()` method
+  - Added `finalize_person_session()` method
+  - Added `log_appearance_with_attention()` method
+
+#### CLI Arguments
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--sgie-headpose-config` | None | Path to head pose SGIE config |
+| `--yaw-threshold` | 30.0 | Max yaw angle for "looking" |
+| `--pitch-threshold` | 20.0 | Max pitch angle for "looking" |
+| `--engagement-time` | 2.0 | Seconds before "engaged" |
+
+#### Performance
+- **FPS with Head Pose:** 16-18 FPS at 1280x720
+- **Memory:** ~500MB
+- **Latency:** ~60ms per frame
+
+#### Documentation
+- `docs/PHASE_5_COMPLETE.md` - Phase 5 completion report
+- Updated `README.md` for Phase 5
+
+---
+
+## [0.5.1] - 2026-01-31
+
+### Head Pose ONNX Runtime Implementation
+
+#### Changed
+- **Head pose now uses ONNX Runtime** instead of DeepStream SGIE
+  - Workaround for DeepStream 7.1 caps negotiation bug with regression models
+  - Face crops extracted via `pyds.get_nvds_buf_surface()` in probe callback
+  - Processed via CPU-based ONNX Runtime (WHENet model)
+  - Proper buffer cleanup with try/finally to prevent CUDA memory leaks
+
+- **CLI argument renamed:** `--sgie-headpose-config` → `--headpose-model`
+  - Now takes ONNX model path instead of SGIE config
+
+- **Default attention thresholds changed to ±10°**
+  - `--yaw-threshold` default: 30° → 10°
+  - `--pitch-threshold` default: 20° → 10°
+  - More strict threshold requires looking almost directly at camera
+
+#### Added
+- `src/analytics/headpose_onnx.py` - HeadPoseONNX class for ONNX Runtime inference
+- `models/headpose/whenet_prepost.onnx` - WHENet model with built-in ImageNet preprocessing
+
+#### Fixed
+- CUDA memory leak caused by improper buffer unmapping
+- Added `.copy()` when extracting face crops to avoid GPU buffer reference during inference
+- Added `finally` block to ensure `unmap_nvds_buf_surface()` always called
+
+#### Performance
+- **FPS:** 14-15 FPS at 1920x1080 with all features enabled
+- Head pose via ONNX Runtime adds ~2-3ms per face
+
+---
+
 ## Upcoming
 
-### [0.5.0] - Phase 5: Attention Detection (Planned)
-- Head pose estimation (6DRepNet)
-- Attention state machine
-- Qualified impressions counting
-- Dwell time calculation
-
 ### [1.0.0] - Phase 6: Production Release (Planned)
+- Replace placeholder head pose model with production model
 - JSON output for system controller
-- Multi-camera support
+- Multi-camera aggregation
 - Systemd service integration
 - Production optimization
 
@@ -249,5 +340,6 @@ RECENT_SEEN_THRESHOLD_REDUCTION = 0.20  # Threshold reduction (increased)
 | 0.4.0 | Phase 4: Demographics | APPROVED | 2026-01-31 |
 | 0.4.1 | RE-ID Stability | IMPLEMENTED | 2026-01-31 |
 | 0.4.2 | Age Investigation | DOCUMENTED | 2026-01-31 |
-| 0.5.0 | Phase 5: Attention | Planned | - |
+| 0.5.0 | Phase 5: Attention | IMPLEMENTED | 2026-01-31 |
+| 0.5.1 | Head Pose ONNX Runtime | IMPLEMENTED | 2026-01-31 |
 | 1.0.0 | Phase 6: Production | Planned | - |

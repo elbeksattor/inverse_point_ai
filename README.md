@@ -1,6 +1,6 @@
 # IP AI v3 - Inverse Point AI Analytics System
 
-**Version:** 0.4.1 (Phase 4 Complete + RE-ID Improvements)
+**Version:** 0.5.1 (Phase 5 Complete - Attention Detection with ONNX Runtime)
 **Platform:** NVIDIA Jetson Orin Nano / Orin NX
 **Framework:** NVIDIA DeepStream SDK 7.1
 
@@ -14,7 +14,7 @@
 | **Phase 2** | Tracking + OSNet Embeddings | **APPROVED** |
 | **Phase 3** | Persistent RE-ID Database | **APPROVED** |
 | **Phase 4** | Demographics Analysis | **APPROVED** |
-| Phase 5 | Attention Detection | Planned |
+| **Phase 5** | Attention Detection | **IMPLEMENTED** |
 | Phase 6 | Production Integration | Planned |
 
 ---
@@ -57,6 +57,25 @@ python3 src/main.py --camera /dev/video0 --no-display
 ./run_headless.sh
 ```
 
+### Run with Attention Detection
+
+```bash
+# Enable head pose estimation and attention tracking (ONNX Runtime)
+python3 src/main.py --camera /dev/video0 \
+  --sgie-config configs/sgie_demographics_config.txt \
+  --headpose-model models/headpose/whenet_prepost.onnx
+
+# With custom attention thresholds (default: ±10°)
+python3 src/main.py --camera /dev/video0 \
+  --headpose-model models/headpose/whenet_prepost.onnx \
+  --yaw-threshold 10 \
+  --pitch-threshold 10 \
+  --engagement-time 2.0
+
+# Or use the convenience script (includes all settings)
+./run_with_display.sh --sgie-config configs/sgie_demographics_config.txt
+```
+
 ### Command Line Options
 
 | Option | Default | Description |
@@ -67,7 +86,11 @@ python3 src/main.py --camera /dev/video0 --no-display
 | `--fps` | 30 | Target framerate |
 | `--no-display` | False | Run without display |
 | `--tracker-config` | configs/tracker_config.txt | Tracker config |
-| `--sgie-config` | configs/sgie_demographics_config.txt | Demographics SGIE config |
+| `--sgie-config` | None | Demographics SGIE config |
+| `--headpose-model` | None | Head pose ONNX model path |
+| `--yaw-threshold` | 10.0 | Max yaw for "looking" (degrees) |
+| `--pitch-threshold` | 10.0 | Max pitch for "looking" (degrees) |
+| `--engagement-time` | 2.0 | Seconds to qualify as "engaged" |
 | `--no-database` | False | Disable RE-ID database |
 | `--db-path` | data/person_database | Database path |
 | `--reid-threshold` | 0.50 | RE-ID similarity threshold |
@@ -75,7 +98,7 @@ python3 src/main.py --camera /dev/video0 --no-display
 
 ---
 
-## Features (Phase 1-4)
+## Features (Phase 1-5)
 
 ### Person Detection (Phase 1)
 - **Model:** PeopleNet (ResNet34 backbone)
@@ -103,6 +126,19 @@ python3 src/main.py --camera /dev/video0 --no-display
 - **Age Groups:** 0-14, 15-19, 20-29, 30-44, 45-59, 60+
 - **Face-Person Association:** Automatic via bbox overlap
 
+### Attention Detection (Phase 5)
+- **Model:** WHENet head pose via ONNX Runtime (224x224 input)
+- **Output:** Yaw, Pitch, Roll angles in degrees
+- **Attention State Machine:**
+  - **NOT_LOOKING:** Head turned away (|yaw| > 10° or |pitch| > 10°)
+  - **LOOKING:** Person facing camera (|yaw| < 10° AND |pitch| < 10°)
+  - **ENGAGED:** Looking for >2 seconds (configurable)
+- **Qualified Impressions (QI):** Count of persons who reached ENGAGED state
+- **Visual Indicators:**
+  - Green border + `[ENGAGED]` label for engaged persons
+  - Yellow border + `[LOOKING]` label for looking persons
+  - Default blue border for not looking
+
 ### On-Screen Display
 - Real-time statistics overlay
 - Bounding boxes with labels
@@ -125,11 +161,16 @@ ip_ai_v3/
 │   ├── pgie_config.txt                   # Detection model config
 │   ├── tracker_config.txt                # Tracker config
 │   ├── nvdeepsort_config.yml             # NvDeepSORT config
-│   └── sgie_demographics_config.txt      # Demographics SGIE config
+│   ├── sgie_demographics_config.txt      # Demographics SGIE config
+│   └── sgie_headpose_config.txt          # Head pose SGIE config
 ├── src/                                  # Source code
 │   ├── main.py                           # Entry point
 │   ├── pipeline/
 │   │   └── camera_pipeline.py            # DeepStream pipeline
+│   ├── analytics/
+│   │   ├── __init__.py                   # Analytics module
+│   │   ├── attention_tracker.py          # Attention state machine
+│   │   └── headpose_onnx.py              # ONNX Runtime head pose
 │   ├── database/
 │   │   └── person_database.py            # FAISS + SQLite RE-ID
 │   └── utils/
@@ -138,7 +179,8 @@ ip_ai_v3/
 ├── models/
 │   ├── peoplenet/                        # Detection model
 │   ├── tracker/                          # OSNet RE-ID model
-│   └── demographics/                     # GenderAge model
+│   ├── demographics/                     # GenderAge model
+│   └── headpose/                         # Head pose model
 ├── data/                                 # Runtime data
 │   └── person_database/                  # RE-ID database files
 ├── output/                               # Output files
@@ -148,6 +190,7 @@ ip_ai_v3/
 │   ├── PHASE_2_COMPLETE.md
 │   ├── PHASE_3_COMPLETE.md
 │   ├── PHASE_4_COMPLETE.md
+│   ├── PHASE_5_COMPLETE.md
 │   └── CHANGELOG.md
 ├── run_with_display.sh                   # Run with HDMI display
 ├── run_headless.sh                       # Run without display
@@ -192,6 +235,7 @@ faiss-cpu>=1.7.0
 | [Phase 2 Complete](docs/PHASE_2_COMPLETE.md) | Tracking + OSNet |
 | [Phase 3 Complete](docs/PHASE_3_COMPLETE.md) | RE-ID Database |
 | [Phase 4 Complete](docs/PHASE_4_COMPLETE.md) | Demographics Analysis |
+| [Phase 5 Complete](docs/PHASE_5_COMPLETE.md) | Attention Detection |
 | [Changelog](docs/CHANGELOG.md) | Version history |
 
 ---
@@ -204,9 +248,10 @@ faiss-cpu>=1.7.0
 | + Tracking | 20 FPS | ~400MB |
 | + RE-ID Database | 20 FPS | ~420MB |
 | + Demographics | 20 FPS | ~430MB |
+| + Head Pose | 16-18 FPS | ~500MB |
 
 **Resolution:** 1280x720
-**Latency:** <40ms
+**Latency:** <60ms (with head pose)
 
 ---
 

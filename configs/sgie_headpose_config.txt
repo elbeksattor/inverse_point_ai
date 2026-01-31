@@ -1,0 +1,62 @@
+################################################################################
+# IP AI v3 - Head Pose Secondary GIE Configuration
+# Head Pose Estimation Model - Operates on Face detections from PeopleNet
+# Platform: Jetson Orin Nano
+################################################################################
+
+[property]
+gpu-id=0
+
+# Unique ID for this GIE (PGIE=1, Demographics=2, HeadPose=3)
+gie-unique-id=3
+
+# Network scaling - prepost model has ImageNet normalization built in
+# Input should be raw 0-255 values, model handles normalization internally
+net-scale-factor=1.0
+
+# Model files - PINTO0309 prepost model with built-in normalization
+onnx-file=/home/nvidia/projects/inverse_point/ip_ai_v3/models/headpose/whenet_prepost.onnx
+model-engine-file=/home/nvidia/projects/inverse_point/ip_ai_v3/models/headpose/whenet_prepost.onnx_b1_gpu0_fp16.engine
+
+# Input dimensions: CHW format (3 channels, 224x224)
+infer-dims=3;224;224
+
+# Batch processing
+batch-size=1
+
+# Process mode: 2=Secondary GIE
+process-mode=2
+
+# Model input: RGB
+model-color-format=0
+
+# Maintain aspect ratio when resizing
+maintain-aspect-ratio=1
+
+# Network mode: 2=FP16
+network-mode=2
+
+# Network type: 100=Other (raw tensor output for regression models)
+network-type=100
+
+# Operate on outputs from PGIE (gie-unique-id=1)
+operate-on-gie-id=1
+
+# Only process Face class (class_id=2 from PeopleNet: person=0, bag=1, face=2)
+operate-on-class-ids=2
+
+# Minimum object size to process (filter out small faces)
+input-object-min-width=64
+input-object-min-height=64
+
+# Run inference on every frame
+interval=0
+
+# Output tensor name from model (WHENet outputs yaw, roll, pitch)
+output-blob-names=yaw_roll_pitch
+
+# Workspace size for TensorRT (MB)
+workspace-size=256
+
+# Enable tensor output metadata for raw parsing
+output-tensor-meta=1

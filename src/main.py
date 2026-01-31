@@ -92,6 +92,32 @@ Examples:
         default=None,
         help="Demographics SGIE config file (default: disabled)"
     )
+    model_group.add_argument(
+        "--headpose-model",
+        default=None,
+        help="Head pose ONNX model path for attention tracking (default: disabled)"
+    )
+
+    # Attention tracking options
+    attention_group = parser.add_argument_group("Attention Tracking Options")
+    attention_group.add_argument(
+        "--yaw-threshold",
+        type=float,
+        default=30.0,
+        help="Max yaw angle (degrees) to consider 'looking' (default: 30.0)"
+    )
+    attention_group.add_argument(
+        "--pitch-threshold",
+        type=float,
+        default=20.0,
+        help="Max pitch angle (degrees) to consider 'looking' (default: 20.0)"
+    )
+    attention_group.add_argument(
+        "--engagement-time",
+        type=float,
+        default=2.0,
+        help="Seconds of looking before marking as 'engaged' (default: 2.0)"
+    )
 
     # Output options
     output_group = parser.add_argument_group("Output Options")
@@ -163,12 +189,14 @@ def bbox_overlap(box1, box2):
     return intersection / area1 if area1 > 0 else 0.0
 
 
-def create_frame_callback(logger, person_database=None):
+def create_frame_callback(logger, person_database=None, attention_tracker=None):
     """Create frame callback for logging detections."""
     frame_stats = {
         'total_persons': 0,
         'total_frames': 0,
-        'unique_person_ids': set()  # Track unique Person IDs
+        'unique_person_ids': set(),  # Track unique Person IDs
+        'total_qualified_impressions': 0,  # Track qualified impressions
+        'max_engaged': 0  # Max simultaneously engaged
     }
 
     def on_frame(frame_data: FrameMetadata):
@@ -230,6 +258,18 @@ def create_frame_callback(logger, person_database=None):
                     demo_str = f" | Demo: {face.gender[0] if face.gender else '?'}{face.age}"
                     break
 
+            # Get attention metrics
+            attention_str = ""
+            if attention_tracker:
+                summary = attention_tracker.get_summary()
+                looking = summary.get('currently_looking', 0)
+                engaged = summary.get('currently_engaged', 0)
+                qi = summary.get('total_qualified_impressions', 0)
+                frame_stats['total_qualified_impressions'] = qi
+                if engaged > frame_stats['max_engaged']:
+                    frame_stats['max_engaged'] = engaged
+                attention_str = f" | Attn: {looking}L/{engaged}E | QI: {qi}"
+
             print(
                 f"[Frame {frame_data.frame_num:5d}] "
                 f"Persons: {len(persons):2d} | "
@@ -238,6 +278,7 @@ def create_frame_callback(logger, person_database=None):
                 f"FPS: {frame_data.fps:5.1f} | "
                 f"Unique: {len(frame_stats['unique_person_ids'])}"
                 f"{demo_str}"
+                f"{attention_str}"
             )
 
             # Log detection details if any
@@ -324,9 +365,6 @@ def main():
             logger.warning("person_database_init_failed", error=str(e))
             person_database = None
 
-    # Create frame callback
-    on_frame, frame_stats = create_frame_callback(logger, person_database)
-
     # Handle SGIE config
     sgie_config = args.sgie_config
     if sgie_config and sgie_config.lower() == 'none':
@@ -335,7 +373,15 @@ def main():
         logger.warning("sgie_config_not_found", path=sgie_config)
         sgie_config = None
 
-    # Create pipeline
+    # Handle head pose ONNX model path
+    headpose_model_path = args.headpose_model
+    if headpose_model_path and headpose_model_path.lower() == 'none':
+        headpose_model_path = None
+    elif headpose_model_path and not Path(headpose_model_path).exists():
+        logger.warning("headpose_model_not_found", path=headpose_model_path)
+        headpose_model_path = None
+
+    # Create pipeline (without callback first)
     pipeline = CameraPipeline(
         camera_device=args.camera,
         width=args.width,
@@ -344,12 +390,22 @@ def main():
         pgie_config=str(pgie_config),
         tracker_config=tracker_config,
         sgie_config=sgie_config,
+        headpose_model_path=headpose_model_path,
         output_file=args.output,
         display=not args.no_display,
-        on_frame_callback=on_frame,
+        on_frame_callback=None,  # Set below after pipeline creation
         person_database=person_database,
-        reid_threshold=args.reid_threshold
+        reid_threshold=args.reid_threshold,
+        yaw_threshold=args.yaw_threshold,
+        pitch_threshold=args.pitch_threshold,
+        engagement_time=args.engagement_time
     )
+
+    # Create frame callback with attention tracker reference
+    on_frame, frame_stats = create_frame_callback(
+        logger, person_database, pipeline.attention_tracker
+    )
+    pipeline.on_frame_callback = on_frame
 
     # Set up signal handlers
     shutdown_requested = [False]  # Use list to allow modification in nested function
@@ -375,6 +431,11 @@ def main():
     print(f"Tracker:    {'Enabled' if tracker_config else 'Disabled'}")
     print(f"RE-ID DB:   {'Enabled' if person_database else 'Disabled'}")
     print(f"Demographics: {'Enabled' if sgie_config else 'Disabled'}")
+    if headpose_model_path:
+        print(f"Head Pose:  Enabled (ONNX, yaw<{args.yaw_threshold}°, pitch<{args.pitch_threshold}°)")
+        print(f"Attention:  Enabled (engagement: {args.engagement_time}s)")
+    else:
+        print(f"Head Pose:  Disabled")
     print("=" * 60)
     print("Press Ctrl+C to stop\n")
 
@@ -412,6 +473,18 @@ def main():
         print(f"Unique (session): {len(frame_stats['unique_person_ids'])}")
         print(f"Unique (all-time): {db_unique_count}")
         print(f"Avg FPS:        {pipeline.get_fps():.1f}")
+
+        # Attention statistics
+        if pipeline.attention_tracker:
+            attn_summary = pipeline.attention_tracker.get_summary()
+            print("-" * 60)
+            print("Attention Statistics")
+            print("-" * 60)
+            print(f"Qualified Impressions: {attn_summary.get('total_qualified_impressions', 0)}")
+            print(f"Currently Looking: {attn_summary.get('currently_looking', 0)}")
+            print(f"Currently Engaged: {attn_summary.get('currently_engaged', 0)}")
+            print(f"Max Engaged: {frame_stats.get('max_engaged', 0)}")
+
         print("=" * 60)
 
 

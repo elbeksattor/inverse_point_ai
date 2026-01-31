@@ -24,6 +24,9 @@ import pyds
 
 import structlog
 
+# Import attention tracker and head pose estimator
+from ..analytics import AttentionTracker, AttentionState, HeadPoseONNX
+
 logger = structlog.get_logger(__name__)
 
 
@@ -43,6 +46,12 @@ class DetectionResult:
     age: Optional[int] = None
     gender: Optional[str] = None  # "Male" or "Female"
     age_group: Optional[str] = None  # "0-17", "18-29", "30-44", "45-59", "60+"
+    # Head pose from SGIE-2
+    head_yaw: Optional[float] = None
+    head_pitch: Optional[float] = None
+    head_roll: Optional[float] = None
+    # Attention state
+    attention_state: Optional[str] = None  # "NOT_LOOKING", "LOOKING", "ENGAGED"
 
 
 @dataclass
@@ -76,11 +85,16 @@ class CameraPipeline:
         pgie_config: str = "configs/pgie_config.txt",
         tracker_config: Optional[str] = "configs/tracker_config.txt",
         sgie_config: Optional[str] = None,  # Demographics SGIE config
+        headpose_model_path: Optional[str] = None,  # Head pose ONNX model path
         output_file: Optional[str] = None,
         display: bool = True,
         on_frame_callback: Optional[Callable[[FrameMetadata], None]] = None,
         person_database: Optional[Any] = None,  # PersonDatabase instance
-        reid_threshold: float = 0.50  # Cosine similarity threshold for RE-ID (adaptive)
+        reid_threshold: float = 0.50,  # Cosine similarity threshold for RE-ID (adaptive)
+        # Attention tracking thresholds
+        yaw_threshold: float = 30.0,
+        pitch_threshold: float = 20.0,
+        engagement_time: float = 2.0
     ):
         """
         Initialize camera pipeline.
@@ -93,11 +107,15 @@ class CameraPipeline:
             pgie_config: Path to primary GIE config file
             tracker_config: Path to tracker config file (None to disable)
             sgie_config: Path to demographics SGIE config file (None to disable)
+            headpose_model_path: Path to head pose ONNX model (None to disable)
             output_file: Path to save output video (None for no save)
             display: Whether to display output (requires display)
             on_frame_callback: Callback function for frame metadata
             person_database: PersonDatabase instance for persistent RE-ID
             reid_threshold: Cosine similarity threshold for person matching
+            yaw_threshold: Max yaw angle (degrees) to consider "looking"
+            pitch_threshold: Max pitch angle (degrees) to consider "looking"
+            engagement_time: Seconds of looking before marking as "engaged"
         """
         self.camera_device = camera_device
         self.width = width
@@ -106,11 +124,15 @@ class CameraPipeline:
         self.pgie_config = pgie_config
         self.tracker_config = tracker_config
         self.sgie_config = sgie_config
+        self.headpose_model_path = headpose_model_path
         self.output_file = output_file
         self.display = display
         self.on_frame_callback = on_frame_callback
         self.person_database = person_database
         self.reid_threshold = reid_threshold
+        self.yaw_threshold = yaw_threshold
+        self.pitch_threshold = pitch_threshold
+        self.engagement_time = engagement_time
 
         # Pipeline state
         self.pipeline = None
@@ -128,6 +150,36 @@ class CameraPipeline:
 
         # Demographics cache: person_id -> (gender, age, age_group)
         self._person_demographics: Dict[int, Tuple[str, int, str]] = {}
+
+        # Head pose cache: face_bbox -> (yaw, pitch, roll) for current frame
+        self._frame_face_headpose: Dict[Tuple[float, float, float, float], Tuple[float, float, float]] = {}
+
+        # Initialize head pose estimator (ONNX Runtime) and attention tracker
+        self.headpose_estimator: Optional[HeadPoseONNX] = None
+        self.attention_tracker: Optional[AttentionTracker] = None
+        if self.headpose_model_path and os.path.exists(self.headpose_model_path):
+            # Initialize ONNX Runtime head pose estimator
+            self.headpose_estimator = HeadPoseONNX(
+                model_path=self.headpose_model_path,
+                use_gpu=False  # CPU inference is sufficient for face crops
+            )
+            logger.info(
+                "headpose_estimator_initialized",
+                model_path=self.headpose_model_path
+            )
+
+            # Initialize attention tracker
+            self.attention_tracker = AttentionTracker(
+                yaw_threshold=self.yaw_threshold,
+                pitch_threshold=self.pitch_threshold,
+                engagement_threshold=self.engagement_time
+            )
+            logger.info(
+                "attention_tracker_initialized",
+                yaw_threshold=self.yaw_threshold,
+                pitch_threshold=self.pitch_threshold,
+                engagement_time=self.engagement_time
+            )
 
         # Initialize GStreamer
         Gst.init(None)
@@ -179,6 +231,83 @@ class CameraPipeline:
             age_group = "60+"
 
         return age, gender, age_group
+
+    @staticmethod
+    def _parse_headpose_euler(tensor_data: np.ndarray) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+        """
+        Parse head pose from direct Euler angle output.
+
+        Args:
+            tensor_data: Output tensor of shape [3] containing [yaw, roll, pitch] in degrees
+                         (WHENet output order)
+
+        Returns:
+            Tuple of (yaw, pitch, roll) in degrees, or (None, None, None) if invalid
+        """
+        if tensor_data is None or len(tensor_data) < 3:
+            return None, None, None
+
+        # WHENet outputs [yaw, roll, pitch] - reorder to standard [yaw, pitch, roll]
+        yaw = float(tensor_data[0])
+        pitch = float(tensor_data[2])  # WHENet: index 2 is pitch
+        roll = float(tensor_data[1])   # WHENet: index 1 is roll
+
+        # Clamp to valid range (-180 to 180)
+        yaw = max(-180.0, min(180.0, yaw))
+        pitch = max(-180.0, min(180.0, pitch))
+        roll = max(-180.0, min(180.0, roll))
+
+        return yaw, pitch, roll
+
+    @staticmethod
+    def _parse_headpose_6d(tensor_data: np.ndarray) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+        """
+        Parse head pose from 6D rotation representation (first two columns of rotation matrix).
+
+        Args:
+            tensor_data: Output tensor of shape [6] containing rotation matrix columns
+
+        Returns:
+            Tuple of (yaw, pitch, roll) in degrees, or (None, None, None) if invalid
+        """
+        if tensor_data is None or len(tensor_data) < 6:
+            return None, None, None
+
+        try:
+            # 6D representation: [r11, r21, r31, r12, r22, r32]
+            # First column of rotation matrix
+            r1 = np.array([tensor_data[0], tensor_data[1], tensor_data[2]])
+            # Second column
+            r2 = np.array([tensor_data[3], tensor_data[4], tensor_data[5]])
+
+            # Gram-Schmidt orthogonalization
+            r1 = r1 / (np.linalg.norm(r1) + 1e-8)
+            r2 = r2 - np.dot(r1, r2) * r1
+            r2 = r2 / (np.linalg.norm(r2) + 1e-8)
+
+            # Third column via cross product
+            r3 = np.cross(r1, r2)
+
+            # Construct rotation matrix
+            R = np.column_stack([r1, r2, r3])
+
+            # Convert to Euler angles (ZYX convention)
+            # pitch = arcsin(-r31)
+            # yaw = atan2(r21, r11)
+            # roll = atan2(r32, r33)
+            pitch = np.arcsin(-np.clip(R[2, 0], -1, 1))
+            yaw = np.arctan2(R[1, 0], R[0, 0])
+            roll = np.arctan2(R[2, 1], R[2, 2])
+
+            # Convert to degrees
+            yaw_deg = float(np.degrees(yaw))
+            pitch_deg = float(np.degrees(pitch))
+            roll_deg = float(np.degrees(roll))
+
+            return yaw_deg, pitch_deg, roll_deg
+
+        except Exception:
+            return None, None, None
 
     @staticmethod
     def _bbox_overlap_ratio(face_bbox: Tuple[float, float, float, float],
@@ -276,6 +405,12 @@ class CameraPipeline:
             sgie = self._create_element("nvinfer", "sgie")
             sgie.set_property("config-file-path", self.sgie_config)
             logger.info("sgie_demographics_enabled", config=self.sgie_config)
+
+        # ============ Head Pose (ONNX Runtime - handled in probe callback) ============
+        # Head pose estimation is now done via ONNX Runtime in the probe callback
+        # instead of using a DeepStream SGIE element (which has caps negotiation issues)
+        if self.headpose_estimator:
+            logger.info("headpose_onnx_enabled", model_path=self.headpose_model_path)
 
         # ============ Video Convert for OSD ============
         nvvidconv = self._create_element("nvvideoconvert", "nvvidconv")
@@ -375,7 +510,8 @@ class CameraPipeline:
         logger.info(
             "pipeline_built",
             tracker_enabled=tracker is not None,
-            sgie_demographics_enabled=sgie is not None
+            sgie_demographics_enabled=sgie is not None,
+            headpose_onnx_enabled=self.headpose_estimator is not None
         )
 
         return pipeline
@@ -509,6 +645,99 @@ class CameraPipeline:
                 except StopIteration:
                     break
 
+            # ============ PASS 1.5: Collect face head pose ============
+            # Store face head pose by bbox: (left, top, width, height) -> (yaw, pitch, roll)
+            frame_face_headpose: Dict[Tuple[float, float, float, float], Tuple[float, float, float]] = {}
+
+            if self.headpose_estimator:
+                face_count_pass15 = 0
+                headpose_extracted = 0
+
+                # Get frame buffer for face crop extraction (RGBA format)
+                frame_surface = None
+                buffer_mapped = False
+                try:
+                    frame_surface = pyds.get_nvds_buf_surface(hash(gst_buffer), frame_meta.batch_id)
+                    buffer_mapped = True
+                except Exception as e:
+                    if frame_meta.frame_num % 30 == 0:
+                        logger.warning("failed_to_get_frame_surface", error=str(e))
+
+                try:
+                    if frame_surface is not None:
+                        # Iterate through faces and extract head pose
+                        l_obj = frame_meta.obj_meta_list
+                        while l_obj is not None:
+                            try:
+                                obj_meta = pyds.NvDsObjectMeta.cast(l_obj.data)
+                            except StopIteration:
+                                break
+
+                            # Only process faces for head pose
+                            if obj_meta.class_id == 2:
+                                face_count_pass15 += 1
+                                rect = obj_meta.rect_params
+                                face_bbox = (rect.left, rect.top, rect.width, rect.height)
+
+                                # Extract face crop and run ONNX inference
+                                try:
+                                    left = max(0, int(rect.left))
+                                    top = max(0, int(rect.top))
+                                    width = int(rect.width)
+                                    height = int(rect.height)
+
+                                    # Ensure we don't exceed frame bounds
+                                    frame_h, frame_w = frame_surface.shape[:2]
+                                    if left + width > frame_w:
+                                        width = frame_w - left
+                                    if top + height > frame_h:
+                                        height = frame_h - top
+
+                                    if width > 32 and height > 32:
+                                        # Extract face crop (RGBA format from DeepStream)
+                                        # Make a copy to avoid holding reference to GPU buffer
+                                        face_rgba = frame_surface[top:top+height, left:left+width, :].copy()
+                                        # Convert RGBA to BGR for ONNX model
+                                        face_bgr = face_rgba[:, :, [2, 1, 0]]
+
+                                        # Run head pose inference via ONNX Runtime
+                                        result = self.headpose_estimator.estimate(face_bgr)
+                                        if result is not None:
+                                            yaw, pitch, roll = result
+                                            frame_face_headpose[face_bbox] = (yaw, pitch, roll)
+                                            headpose_extracted += 1
+
+                                            if frame_meta.frame_num % 30 == 0:
+                                                logger.info(
+                                                    "headpose_extracted",
+                                                    yaw=f"{yaw:.1f}",
+                                                    pitch=f"{pitch:.1f}",
+                                                    roll=f"{roll:.1f}"
+                                                )
+                                except Exception as e:
+                                    if frame_meta.frame_num % 30 == 0:
+                                        logger.warning("headpose_crop_error", error=str(e))
+
+                            try:
+                                l_obj = l_obj.next
+                            except StopIteration:
+                                break
+                finally:
+                    # ALWAYS unmap buffer (required for Jetson to prevent memory leaks)
+                    if buffer_mapped:
+                        try:
+                            pyds.unmap_nvds_buf_surface(hash(gst_buffer), frame_meta.batch_id)
+                        except Exception:
+                            pass
+
+                # Log summary every 30 frames
+                if frame_meta.frame_num % 30 == 0:
+                    logger.info(
+                        "headpose_pass15_summary",
+                        faces_found=face_count_pass15,
+                        headpose_extracted=headpose_extracted
+                    )
+
             # ============ PASS 2: Process all objects ============
             l_obj = frame_meta.obj_meta_list
             while l_obj is not None:
@@ -598,6 +827,33 @@ class CameraPipeline:
                         age_group=age_group
                     )
 
+                # Get head pose from pass 1.5 cache (for faces)
+                head_yaw = None
+                head_pitch = None
+                head_roll = None
+                attention_state = None
+
+                if class_id == 2 and bbox in frame_face_headpose:
+                    head_yaw, head_pitch, head_roll = frame_face_headpose[bbox]
+
+                # For persons, find head pose from overlapping face
+                if class_id == 0 and person_id is not None and self.attention_tracker is not None:
+                    for face_bbox, (f_yaw, f_pitch, f_roll) in frame_face_headpose.items():
+                        overlap = self._bbox_overlap_ratio(face_bbox, bbox)
+                        if overlap > 0.5:  # Face is >50% inside person bbox
+                            head_yaw, head_pitch, head_roll = f_yaw, f_pitch, f_roll
+                            # Update attention tracker
+                            attention_state = self.attention_tracker.update(
+                                person_id, head_yaw, head_pitch, head_roll
+                            )
+                            break
+
+                    # If no face detected but person exists, mark as not looking
+                    if head_yaw is None and person_id is not None:
+                        attention_state = self.attention_tracker.update(
+                            person_id, None, None, None
+                        )
+
                 detection = DetectionResult(
                     class_id=class_id,
                     class_name=class_name,
@@ -610,20 +866,27 @@ class CameraPipeline:
                     person_id=person_id,
                     age=age,
                     gender=gender,
-                    age_group=age_group
+                    age_group=age_group,
+                    head_yaw=head_yaw,
+                    head_pitch=head_pitch,
+                    head_roll=head_roll,
+                    attention_state=attention_state
                 )
 
                 frame_data.detections.append(detection)
 
                 # Update display text based on detection type
                 if class_id == 2:
-                    # Face - show demographics if available (cyan color)
+                    # Face - show demographics and head pose if available (cyan color)
                     if age is not None or gender is not None:
                         gender_char = gender[0] if gender else "?"
                         age_str = str(age) if age is not None else "?"
                         display_text = f"{gender_char}{age_str} {confidence:.2f}"
                     else:
                         display_text = f"face {confidence:.2f}"
+                    # Add head pose info if available
+                    if head_yaw is not None:
+                        display_text += f" Y:{head_yaw:.0f}"
                     obj_meta.text_params.font_params.font_color.set(0.0, 1.0, 1.0, 1.0)  # Cyan
 
                 elif class_id == 0 and person_id is not None:
@@ -643,21 +906,67 @@ class CameraPipeline:
                     if person_demo is None and person_id in self._person_demographics:
                         person_demo = self._person_demographics[person_id]
 
-                    # Display with demographics if available
+                    # Build display text with demographics and attention state
                     if person_demo:
                         gender_char = person_demo[0][0]  # First char of gender
                         age_val = person_demo[1]
-                        display_text = f"P{person_id} {gender_char}{age_val} {confidence:.2f}"
-                        obj_meta.text_params.font_params.font_color.set(0.0, 1.0, 0.5, 1.0)  # Cyan-green
+                        display_text = f"P{person_id} {gender_char}{age_val}"
                     else:
-                        display_text = f"P{person_id} #{tracker_id} {confidence:.2f}"
-                        obj_meta.text_params.font_params.font_color.set(0.0, 1.0, 0.0, 1.0)  # Green
+                        display_text = f"P{person_id}"
+
+                    # Add head pose (Yaw/Pitch) if available
+                    if head_yaw is not None and head_pitch is not None:
+                        display_text += f" Y:{head_yaw:.0f} P:{head_pitch:.0f}"
+
+                    # Add attention state label and set color based on state
+                    if attention_state == "ENGAGED":
+                        display_text += " [ENGAGED]"
+                        display_text += f" {confidence:.2f}"
+                        # Green color for engaged
+                        obj_meta.text_params.font_params.font_color.set(0.0, 1.0, 0.0, 1.0)
+                        # Green border
+                        obj_meta.rect_params.border_color.set(0.0, 1.0, 0.0, 1.0)
+                        obj_meta.rect_params.border_width = 4
+                    elif attention_state == "LOOKING":
+                        display_text += " [LOOKING]"
+                        display_text += f" {confidence:.2f}"
+                        # Yellow color for looking
+                        obj_meta.text_params.font_params.font_color.set(1.0, 1.0, 0.0, 1.0)
+                        # Yellow border
+                        obj_meta.rect_params.border_color.set(1.0, 1.0, 0.0, 1.0)
+                        obj_meta.rect_params.border_width = 3
+                    else:
+                        display_text += f" {confidence:.2f}"
+                        # Cyan-green for default (with demographics) or green (without)
+                        if person_demo:
+                            obj_meta.text_params.font_params.font_color.set(0.0, 1.0, 0.5, 1.0)
+                        else:
+                            obj_meta.text_params.font_params.font_color.set(0.0, 1.0, 0.0, 1.0)
+                        # Default border (blue)
+                        obj_meta.rect_params.border_color.set(0.0, 0.5, 1.0, 1.0)
+                        obj_meta.rect_params.border_width = 2
 
                 elif tracker_id > 0:
-                    display_text = f"#{tracker_id} {class_name} {confidence:.2f}"
+                    display_text = f"#{tracker_id} {class_name}"
+                    # Add head pose for tracked persons without person_id
+                    if class_id == 0:  # Person class
+                        for face_bbox, (f_yaw, f_pitch, f_roll) in frame_face_headpose.items():
+                            overlap = self._bbox_overlap_ratio(face_bbox, bbox)
+                            if overlap > 0.5:
+                                display_text += f" Y:{f_yaw:.0f} P:{f_pitch:.0f}"
+                                break
+                    display_text += f" {confidence:.2f}"
                     obj_meta.text_params.font_params.font_color.set(0.0, 1.0, 0.0, 1.0)  # Green
                 else:
-                    display_text = f"{class_name} {confidence:.2f}"
+                    display_text = f"{class_name}"
+                    # Add head pose for untracked persons
+                    if class_id == 0:  # Person class
+                        for face_bbox, (f_yaw, f_pitch, f_roll) in frame_face_headpose.items():
+                            overlap = self._bbox_overlap_ratio(face_bbox, bbox)
+                            if overlap > 0.5:
+                                display_text += f" Y:{f_yaw:.0f} P:{f_pitch:.0f}"
+                                break
+                    display_text += f" {confidence:.2f}"
                     obj_meta.text_params.font_params.font_color.set(1.0, 1.0, 0.0, 1.0)  # Yellow
 
                 obj_meta.text_params.display_text = display_text
@@ -693,15 +1002,35 @@ class CameraPipeline:
             # Get unique persons count from database
             unique_count = len(set(person_ids)) if person_ids else 0
 
-            # Create statistics text with RE-ID info
-            stats_text = (
-                f"IP AI v3 | Frame: {frame_meta.frame_num:6d} | "
-                f"FPS: {self._fps:5.1f} | "
-                f"Persons: {person_count:2d} | "
-                f"IDs: [P{person_str}] | "
-                f"Unique: {unique_count} | "
-                f"Time: {elapsed:6.1f}s"
-            )
+            # Get attention metrics from tracker
+            looking_count = 0
+            engaged_count = 0
+            qualified_impressions = 0
+            if self.attention_tracker:
+                summary = self.attention_tracker.get_summary()
+                looking_count = summary.get('currently_looking', 0)
+                engaged_count = summary.get('currently_engaged', 0)
+                qualified_impressions = summary.get('total_qualified_impressions', 0)
+
+            # Create statistics text with RE-ID info and attention metrics
+            if self.attention_tracker:
+                stats_text = (
+                    f"IP AI v3 | Frame: {frame_meta.frame_num:6d} | "
+                    f"FPS: {self._fps:5.1f} | "
+                    f"Persons: {person_count:2d} | "
+                    f"Look: {looking_count}+{engaged_count} | "
+                    f"QI: {qualified_impressions} | "
+                    f"Time: {elapsed:6.1f}s"
+                )
+            else:
+                stats_text = (
+                    f"IP AI v3 | Frame: {frame_meta.frame_num:6d} | "
+                    f"FPS: {self._fps:5.1f} | "
+                    f"Persons: {person_count:2d} | "
+                    f"IDs: [P{person_str}] | "
+                    f"Unique: {unique_count} | "
+                    f"Time: {elapsed:6.1f}s"
+                )
 
             # Configure text parameters for statistics overlay
             display_meta.num_labels = 1
@@ -729,12 +1058,16 @@ class CameraPipeline:
 
             # Log periodically
             if frame_meta.frame_num % 100 == 0:
-                logger.info(
-                    "frame_processed",
-                    frame=frame_meta.frame_num,
-                    persons=person_count,
-                    fps=f"{self._fps:.1f}"
-                )
+                log_kwargs = {
+                    "frame": frame_meta.frame_num,
+                    "persons": person_count,
+                    "fps": f"{self._fps:.1f}"
+                }
+                if self.attention_tracker:
+                    log_kwargs["looking"] = looking_count
+                    log_kwargs["engaged"] = engaged_count
+                    log_kwargs["qi"] = qualified_impressions
+                logger.info("frame_processed", **log_kwargs)
 
             try:
                 l_frame = l_frame.next
