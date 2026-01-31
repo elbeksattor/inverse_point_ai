@@ -1,0 +1,57 @@
+# IP AI v3 - Pipeline Configuration
+# Platform: NVIDIA Jetson Orin Nano
+# Framework: DeepStream SDK 7.1
+
+# Camera settings
+camera:
+  device: "/dev/video0"
+  width: 1280
+  height: 720
+  fps: 30
+
+# Person detection (Primary GIE)
+detection:
+  model_path: "models/peoplenet/resnet34_peoplenet.engine"
+  config_file: "configs/pgie_config.txt"
+  confidence_threshold: 0.4
+  batch_size: 1
+
+# Multi-object tracker (NvDCF with OSNet)
+tracker:
+  config_file: "configs/tracker_config.txt"
+  width: 640
+  height: 384
+  enable_past_frame: true  # Required for OSNet embeddings
+
+# Persistent re-identification
+reid:
+  enabled: true
+  faiss_index_path: "output/person_embeddings.index"
+  sqlite_db_path: "output/person_database.db"
+  similarity_threshold: 0.75
+  embedding_dim: 128
+  moving_avg_weight: 0.7
+  retention_days: 30
+
+# Demographics analysis (Phase 4)
+demographics:
+  enabled: false  # Enable after Phase 4 implementation
+  face_detection_model: "models/face/retinaface.engine"
+  demographics_model: "models/demographics/mivolo.engine"
+  confidence_threshold: 0.6
+
+# Attention detection (Phase 5)
+attention:
+  enabled: false  # Enable after Phase 5 implementation
+  headpose_model: "models/headpose/6drepnet.engine"
+  yaw_threshold: 30.0
+  pitch_threshold: 20.0
+  engagement_time: 2.0
+
+# Output settings
+output:
+  osd_enabled: true
+  json_output_path: "output/analytics/analytics.json"
+  json_interval_seconds: 60
+  log_path: "output/logs"
+  video_output_path: null  # Set to save output video

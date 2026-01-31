@@ -1,0 +1,81 @@
+%YAML:1.0
+################################################################################
+# IP AI v3 - NvDeepSORT Tracker Configuration
+# Platform: Jetson Orin Nano
+# Purpose: Multi-object tracking with RE-ID embeddings
+################################################################################
+
+BaseConfig:
+  minDetectorConfidence: 0.4    # Match pgie threshold for person detection
+
+TargetManagement:
+  preserveStreamUpdateOrder: 0
+  maxTargetsPerStream: 50    # Reduced for Jetson memory constraints
+
+  # [Creation & Termination Policy]
+  minIouDiff4NewTarget: 0.8
+  minTrackerConfidence: 0.3    # Lower threshold for faster tracking
+  probationAge: 1    # Faster track assignment (was 3)
+  maxShadowTrackingAge: 90    # Keep lost tracks longer (was 60)
+  earlyTerminationAge: 1
+
+TrajectoryManagement:
+  useUniqueID: 0    # Use 32-bit ID (sufficient for our use case)
+
+DataAssociator:
+  dataAssociatorType: 0    # DEFAULT
+  associationMatcherType: 1    # CASCADED (better for RE-ID)
+  checkClassMatch: 1    # Only match same-class objects
+
+  # [Association Metric: Mahalanobis distance]
+  thresholdMahalanobis: 12.0
+
+  # [Association Metric: Thresholds] - Lowered for more stable tracking
+  minMatchingScore4Overall: 0.15
+  minMatchingScore4SizeSimilarity: 0.2
+  minMatchingScore4Iou: 0.15
+  minMatchingScore4ReidSimilarity: 0.5    # Lower RE-ID threshold for better matching
+
+  # [Association Metric: Weights]
+  matchingScoreWeight4SizeSimilarity: 0.6
+  matchingScoreWeight4Iou: 0.4
+  matchingScoreWeight4ReidSimilarity: 0.5    # Balanced RE-ID weight
+
+  # [Tentative detections]
+  tentativeDetectorConfidence: 0.25
+  minMatchingScore4TentativeIou: 0.25
+
+StateEstimator:
+  stateEstimatorType: 2    # REGULAR (Kalman filter)
+
+  # [Dynamics Modeling]
+  noiseWeightVar4Loc: 0.05
+  noiseWeightVar4Vel: 0.004
+  useAspectRatio: 1
+
+ReID:
+  reidType: 1    # DEEP (neural network RE-ID)
+  outputReidTensor: 1    # Enable RE-ID embedding output for external use
+
+  # [Reid Network Info]
+  batchSize: 32    # Match engine batch size
+  workspaceSize: 500    # Reduced for Jetson (MB)
+  reidFeatureSize: 256    # Output embedding dimension
+  reidHistorySize: 50    # RE-ID features stored per object
+  inferDims: [3, 256, 128]    # CHW input dimensions
+  networkMode: 1    # FP16 precision
+
+  # [Input Preprocessing]
+  inputOrder: 0    # NCHW
+  colorFormat: 0    # RGB
+  offsets: [123.6750, 116.2800, 103.5300]
+  netScaleFactor: 0.01735207
+  keepAspc: 1    # Maintain aspect ratio
+
+  # [Output Postprocessing]
+  addFeatureNormalization: 1    # L2 normalize embeddings
+
+  # [Paths - Absolute paths for reliability]
+  tltEncodedModel: "/home/nvidia/projects/inverse_point/ip_ai_v3/models/tracker/resnet50_market1501.etlt"
+  tltModelKey: "nvidia_tao"
+  modelEngineFile: "/home/nvidia/projects/inverse_point/ip_ai_v3/models/tracker/resnet50_market1501.etlt_b32_gpu0_fp16.engine"

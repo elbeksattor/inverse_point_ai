@@ -1,0 +1,47 @@
+# IP AI v3 - Primary GIE Configuration (Person Detection)
+# Model: PeopleNet (NVIDIA TAO) - ResNet34 backbone
+# Platform: Jetson Orin Nano
+
+[property]
+gpu-id=0
+net-scale-factor=0.0039215697906911373
+# Use pre-built TensorRT engine for faster startup
+model-engine-file=/home/nvidia/projects/inverse_point/ip_ai_v3/models/peoplenet/resnet34_peoplenet_int8.onnx_b1_gpu0_fp16.engine
+# Fallback to ONNX if engine doesn't exist
+onnx-file=/home/nvidia/projects/inverse_point/ip_ai_v3/models/peoplenet/resnet34_peoplenet_int8.onnx
+labelfile-path=/home/nvidia/projects/inverse_point/ip_ai_v3/models/peoplenet/labels.txt
+batch-size=1
+process-mode=1
+model-color-format=0
+# 0=FP32, 1=INT8, 2=FP16
+network-mode=2
+num-detected-classes=3
+interval=0
+gie-unique-id=1
+output-blob-names=output_cov/Sigmoid;output_bbox/BiasAdd
+# 2=DBSCAN clustering
+cluster-mode=2
+maintain-aspect-ratio=1
+
+# Person class (class 0)
+[class-attrs-0]
+pre-cluster-threshold=0.6
+eps=0.5
+dbscan-min-score=0.6
+group-threshold=1
+minBoxes=1
+
+# Bag class (class 1) - disabled for person-only detection
+[class-attrs-1]
+pre-cluster-threshold=0.4
+eps=0.7
+group-threshold=1
+minBoxes=1
+
+# Face class (class 2) - for demographics
+[class-attrs-2]
+pre-cluster-threshold=0.5
+eps=0.5
+dbscan-min-score=0.5
+group-threshold=1
+minBoxes=1

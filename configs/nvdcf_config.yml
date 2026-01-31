@@ -1,0 +1,48 @@
+# IP AI v3 - NvDCF Tracker Configuration
+# Deep Correlation Filter with OSNet RE-ID
+# Platform: Jetson Orin Nano
+
+%YAML:1.0
+
+BaseConfig:
+  minDetectorConfidence: 0.4
+  minTrackerConfidence: 0.3
+  minIouDiff4NewTrack: 0.5
+  maxTrackAge: 90          # frames to keep lost tracks
+  minHits4TentativeTrack: 3
+
+TargetManagement:
+  maxTargetsPerStream: 64
+  enableBboxUnClipping: 1
+
+TrackingConfig:
+  # NvDCF specific settings
+  useBufferedOutput: 0
+  maxShadowTrackingAge: 30
+  probationAge: 3
+  earlyTerminationAge: 1
+
+# RE-ID Feature Extractor (OSNet)
+ReIDFeatureExtractor:
+  enable: 1
+  featureDim: 128          # OSNet embedding dimension
+
+  # Using built-in OSNet model
+  network_type: 0
+  embedding-size: 128
+  batch-size: 16
+
+  # Feature matching
+  similarityThreshold: 0.70
+
+DataAssociation:
+  # Association thresholds
+  maxDistanceThreshold: 0.5
+  minIouThreshold: 0.3
+  enableReIDAssociation: 1
+
+StateEstimation:
+  # Kalman filter settings
+  processNoiseCov: 0.1
+  measureNoiseCov: 0.1
+  useAspectRatioFilter: 1

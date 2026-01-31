@@ -1,0 +1,62 @@
+################################################################################
+# IP AI v3 - Demographics (Age/Gender) Secondary GIE Configuration
+# InsightFace GenderAge Model - Operates on Face detections from PeopleNet
+# Platform: Jetson Orin Nano
+################################################################################
+
+[property]
+gpu-id=0
+
+# Unique ID for this GIE (PGIE=1, Tracker=internal, Demographics=2)
+gie-unique-id=2
+
+# Network scaling (InsightFace normalization: (x - 127.5) / 127.5)
+net-scale-factor=0.0078431372549
+offsets=127.5;127.5;127.5
+
+# Model files (use absolute paths for reliability)
+onnx-file=/home/nvidia/projects/inverse_point/ip_ai_v3/models/demographics/genderage.onnx
+model-engine-file=/home/nvidia/projects/inverse_point/ip_ai_v3/models/demographics/genderage.onnx_b1_gpu0_fp16.engine
+
+# Input dimensions: CHW format (3 channels, 96x96)
+infer-dims=3;96;96
+
+# Batch processing (reduced for stability)
+batch-size=1
+
+# Process mode: 2=Secondary (classifier)
+process-mode=2
+
+# Model input: 96x96 BGR (InsightFace expects BGR)
+model-color-format=1
+
+# Network mode: 2=FP16
+network-mode=2
+
+# Network type: 1=Classifier
+network-type=1
+
+# Number of output classes (fc1 outputs 3 values)
+num-detected-classes=3
+
+# Operate on outputs from PGIE (gie-unique-id=1)
+operate-on-gie-id=1
+
+# Only process Face class (class_id=2 from PeopleNet: person=0, bag=1, face=2)
+operate-on-class-ids=2
+
+# Run inference on every frame
+interval=0
+
+# Output tensor name from model
+output-blob-names=fc1
+
+# Classifier configuration
+classifier-async-mode=0
+classifier-threshold=0.0
+
+# Workspace size for TensorRT (MB)
+workspace-size=256
+
+# Enable tensor output metadata for raw fc1 parsing
+output-tensor-meta=1
